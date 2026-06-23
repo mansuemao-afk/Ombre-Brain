@@ -72,6 +72,29 @@ def init_runtime(**kwargs) -> None:
     globals().update(kwargs)
 
 
+# --- 心跳 / 活跃时间戳（原 server.py；移到这里让 heartbeat 路由与工具共用同一来源）---
+_SERVER_START_TS = time.time()
+_LAST_OP_TS = _SERVER_START_TS
+
+
+def _mark_op(name: str = "") -> None:
+    """记录一次工具/接口活跃时间，供 /api/heartbeat 上报。
+
+    server.py 启动时把本函数注入 tools._runtime.mark_op，工具调用即更新；
+    /api/heartbeat（web/system.py）读 _LAST_OP_TS。两边同一来源，不会不一致。
+    """
+    global _LAST_OP_TS
+    _LAST_OP_TS = time.time()
+
+
+# --- server.py 级 helper 的注入位（保持定义在 server.py，这里只持引用）---
+# 这些函数读/写 server.py 的 webhook 全局等，搬过来会引发级联，故用注入而非搬迁。
+# 在它们各自定义之后由 server.py 调 init_runtime(...) 填入。
+fire_webhook = None            # async def(event: str, payload: dict) -> None
+write_deletion_notice = None   # def(names: list) -> None
+pop_deletion_notice = None     # def() -> str
+
+
 # --- Dashboard 鉴权常量（原 server.py 调参面板）---
 _PASSWORD_SALT_BYTES = 16            # secrets.token_hex(该值) → 32 char hex salt
 _SESSION_TOKEN_BYTES = 32            # secrets.token_urlsafe(该值) → ~43 char token

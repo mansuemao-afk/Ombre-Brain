@@ -365,18 +365,8 @@ _web.register_all(mcp)
 # =============================================================
 
 
-# =============================================================
-# /api/heartbeat — 轻量心跳（iter 1.6 §3）
-# 仅返回 {alive, ts, uptime_s, last_op_ts}，前端右上角心跳灯轮询。
-# =============================================================
-_SERVER_START_TS = time.time()
-_LAST_OP_TS = _SERVER_START_TS
-
-
-def _mark_op(name: str = "") -> None:
-    """记录一次工具/接口活跃时间，供 /api/heartbeat 上报。"""
-    global _LAST_OP_TS
-    _LAST_OP_TS = time.time()
+# 心跳时间戳 + _mark_op 已移到 web/_shared.py；这里 import 回来供 tools._runtime 注入。
+from web._shared import _mark_op  # noqa: F401  (injected into tools._runtime below)
 
 
 # =============================================================
@@ -517,109 +507,9 @@ async def _with_notice(coro: Awaitable[str], op: str = "", args: dict | None = N
     return body + extras if extras else body
 
 
-@mcp.custom_route("/api/heartbeat", methods=["GET"])
-async def api_heartbeat(request: Request) -> Response:
-    from starlette.responses import JSONResponse
-    err = _require_auth(request)
-    if err:
-        return err
-    return JSONResponse({
-        "alive": True,
-        "ts": time.time(),
-        "uptime_s": int(time.time() - _SERVER_START_TS),
-        "last_op_ts": _LAST_OP_TS,
-        "decay_engine": "running" if decay_engine.is_running else "stopped",
-    })
-
-
 # =============================================================
-# /api/logs — 读取 server.log 末尾若干行（iter 1.6 §3）
-# Query params:
-#   level=ERROR|WARNING|INFO（默认 WARNING：返回 WARNING+ERROR）
-#   limit=200（最多返回多少行，1~2000）
+# /api/heartbeat、/api/logs、/api/errors/* —— 已拆分到 web/system.py
 # =============================================================
-@mcp.custom_route("/api/logs", methods=["GET"])
-async def api_logs(request: Request) -> Response:
-    from starlette.responses import JSONResponse
-    err = _require_auth(request)
-    if err:
-        return err
-    log_file = os.environ.get("OMBRE_LOG_FILE", "")
-    if not log_file or not os.path.isfile(log_file):
-        return JSONResponse({
-            "lines": [],
-            "log_file": log_file or "",
-            "note": "日志文件尚未创建（可能未启用文件日志或刚启动）",
-        })
-    try:
-        limit = max(1, min(int(request.query_params.get("limit", str(_LOGS_DEFAULT_LIMIT))), _LOGS_MAX_LIMIT))
-    except ValueError:
-        limit = _LOGS_DEFAULT_LIMIT
-    level = request.query_params.get("level", "WARNING").upper()
-    allow = {"ERROR": ("ERROR",),
-             "WARNING": ("WARNING", "ERROR"),
-             "INFO": ("INFO", "WARNING", "ERROR"),
-             "ALL": None}
-    keep = allow.get(level, ("WARNING", "ERROR"))
-    try:
-        # 简单 tail：日志通常 <1MB（rotate），全读再过滤完全够用
-        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        if keep is not None:
-            lines = [ln for ln in lines if any(f" {lv}: " in ln for lv in keep)]
-        lines = lines[-limit:]
-        return JSONResponse({
-            "lines": [ln.rstrip("\n") for ln in lines],
-            "log_file": log_file,
-            "level": level,
-            "count": len(lines),
-        })
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-# =============================================================
-# /api/errors — 统一错误码体系（rule.md §11）
-# 读：返回 errors.jsonl 末尾若干条（默认仅 W+）。每条带最近 15 条 log。
-# 删：清空 errors.jsonl（前端"已读"按钮）。
-# Claude 不能写、只能间接产生（业务代码 record_error）。
-# =============================================================
-@mcp.custom_route("/api/errors/recent", methods=["GET"])
-async def api_errors_recent(request: Request) -> Response:
-    from starlette.responses import JSONResponse
-    err = _require_auth(request)
-    if err:
-        return err
-    try:
-        limit = max(1, min(int(request.query_params.get("limit", str(_ERRORS_DEFAULT_LIMIT))), _ERRORS_MAX_LIMIT))
-    except ValueError:
-        limit = _ERRORS_DEFAULT_LIMIT
-    min_level = request.query_params.get("min_level", "W").upper()
-    items = recent_errors(limit=limit, min_level=min_level)
-    # 给每条附最近 15 条 log（用于复制按钮）
-    tail = get_recent_logs(15)
-    for it in items:
-        it["formatted"] = format_error(
-            it.get("code", ""), it.get("detail", ""),
-            extra=it.get("extra"), include_logs=True,
-        )
-    return JSONResponse({
-        "ok": True,
-        "count": len(items),
-        "min_level": min_level,
-        "log_tail": tail,
-        "errors": items,
-    })
-
-
-@mcp.custom_route("/api/errors/clear", methods=["POST"])
-async def api_errors_clear(request: Request) -> Response:
-    from starlette.responses import JSONResponse
-    err = _require_auth(request)
-    if err:
-        return err
-    n = clear_errors_log()
-    return JSONResponse({"ok": True, "cleared": n})
 
 
 # =============================================================
