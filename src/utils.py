@@ -382,9 +382,11 @@ def get_version() -> str:
         比裸 `except:` 安全，比 `except FileNotFoundError` 全面
     """
     candidates = [
-        os.path.join(_project_root(), "VERSION"),
-        # Docker 场景：镜像把 VERSION 也 COPY 到 /app/src/VERSION
+        # Docker 场景：src/ 是 bind mount（/opt/ombre-brain/src），宿主机可直接编辑
+        # 优先读这里，比 image 层烤死的 /app/VERSION 更新
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION"),
+        # 本地开发：src/ 同级的项目根目录
+        os.path.join(_project_root(), "VERSION"),
     ]
     for path in candidates:
         try:
