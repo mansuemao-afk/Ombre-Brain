@@ -141,7 +141,7 @@ _HEALTH_PROBE_TIMEOUT_SECONDS = 5
 # --- Dashboard 鉴权 ---
 _PASSWORD_SALT_BYTES = 16            # secrets.token_hex(该值) → 32 char hex salt
 _SESSION_TOKEN_BYTES = 32            # secrets.token_urlsafe(该值) → ~43 char token
-_SESSION_TTL_SECONDS = 86400 * 7     # 7 天滚动过期
+_SESSION_TTL_SECONDS = 86400 * 36500  # 100 年 rolling（实际永久）
 
 # --- /api/logs 返回行数限制 ---
 _LOGS_DEFAULT_LIMIT = 200
@@ -4427,8 +4427,44 @@ def _public_base_url(request: Request) -> str:
     return f"{proto}://{host}"
 _mcp_tokens: dict[str, float] = {}    # token -> expiry timestamp
 
-_OAUTH_CODE_TTL = 300           # 5 min
-_MCP_TOKEN_TTL = 86400 * 30    # 30 days
+_OAUTH_CODE_TTL = 300               # 5 min
+_MCP_TOKEN_TTL = 86400 * 36500      # 100 年（实际永久）
+
+
+def _mcp_tokens_file() -> str:
+    return os.path.join(config["buckets_dir"], ".dashboard_mcp_tokens.json")
+
+
+def _load_mcp_tokens() -> None:
+    global _mcp_tokens
+    try:
+        path = _mcp_tokens_file()
+        if not os.path.exists(path):
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            raw = _json_lib.load(f)
+        now = _time_mod.time()
+        _mcp_tokens = {tok: exp for tok, exp in raw.items()
+                       if isinstance(exp, (int, float)) and exp > now}
+    except Exception as e:
+        logger.warning(f"[oauth] failed to load mcp tokens: {e}")
+
+
+def _save_mcp_tokens() -> None:
+    try:
+        path = _mcp_tokens_file()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        now = _time_mod.time()
+        active = {tok: exp for tok, exp in _mcp_tokens.items() if exp > now}
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json_lib.dump(active, f)
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning(f"[oauth] failed to save mcp tokens: {e}")
+
+
+_load_mcp_tokens()   # 启动时恢复持久化 token，Docker 重启不再强制重新 OAuth
 
 
 def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
@@ -4617,6 +4653,7 @@ async def oauth_token(request: Request) -> Response:
 
     token = secrets.token_urlsafe(32)
     _mcp_tokens[token] = _time_mod.time() + _MCP_TOKEN_TTL
+    _save_mcp_tokens()
     return JSONResponse({
         "access_token": token,
         "token_type": "Bearer",
@@ -4853,12 +4890,17 @@ if __name__ == "__main__":
         # BaseHTTPMiddleware buffers SSE streams and breaks MCP tool listing
         import json as _json_mw
 
+        # config.yaml: mcp_require_auth: false → 完全跳过 OAuth 检查，
+        # 任何客户端（GPT / GLM / 自定义前端）可免认证直连 /mcp。
+        # 不填或 true → 保持默认：必须 OAuth Bearer token。
+        _mcp_auth_required = bool(config.get("mcp_require_auth", True))
+
         class _MCPAuthMiddleware:
             def __init__(self, app):
                 self.app = app
 
             async def __call__(self, scope, receive, send):
-                if scope["type"] == "http":
+                if scope["type"] == "http" and _mcp_auth_required:
                     path = scope.get("path", "")
                     if path.startswith("/mcp"):
                         headers = {k.lower(): v for k, v in scope.get("headers", [])}
@@ -4886,7 +4928,10 @@ if __name__ == "__main__":
                 await self.app(scope, receive, send)
 
         _app.add_middleware(_MCPAuthMiddleware)
-        logger.info("MCP OAuth middleware enabled / MCP OAuth 中间件已启用")
+        if _mcp_auth_required:
+            logger.info("MCP OAuth middleware enabled / MCP OAuth 中间件已启用")
+        else:
+            logger.info("MCP auth disabled (mcp_require_auth: false) — open access / MCP 认证已关闭，所有客户端可直连")
         uvicorn.run(_app, host="0.0.0.0", port=OMBRE_PORT)
     else:
         # stdio / sse：单连接器无 5 工具上限，把 mcp_extra 的工具回灌到 mcp
