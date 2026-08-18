@@ -35,6 +35,10 @@ data/
 docs/internal/
 docs/secret/
 docs/secrets/
+docs/superpowers/
+docs/CODE_HEALTH_AUDIT_*.md
+docs/TODO_*.md
+docs/V2.4.0_*.md
 
 # 本地测试脚手架 —— 不上传（需要时本地维护）
 tests/integration/
@@ -68,3 +72,7 @@ kernel/rust/**/target/
 kernel/rust/ombre-kernel/Cargo.lock
 .tmp/ombre-nodes-v2.yaml
 .tmp/
+
+# Local test protocols and generated smoke outputs — never publish.
+tmp_pas_docs_*/
+tmp_hnf1_pas_pair_smoke_*/
